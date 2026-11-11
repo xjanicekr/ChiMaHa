@@ -1488,23 +1488,23 @@ void MainWindow::updateViewTitles()
 void MainWindow::swapViews()
 {
     QWidget *big = viewsSwapped_ ? static_cast<QWidget *>(ui->cameraLabel) : ui->mapView;
-    QWidget *small = viewsSwapped_ ? static_cast<QWidget *>(ui->mapView) : ui->cameraLabel;
+    QWidget *smallView = viewsSwapped_ ? static_cast<QWidget *>(ui->mapView) : ui->cameraLabel;
     dragIndex_ = -1;
     hasHover_ = false;
     cursorLabel_->clear();
 
     QWidget placeholder;
-    delete ui->cameraLayout->replaceWidget(small, &placeholder);
-    delete ui->mapColumnLayout->replaceWidget(big, small);
+    delete ui->cameraLayout->replaceWidget(smallView, &placeholder);
+    delete ui->mapColumnLayout->replaceWidget(big, smallView);
     delete ui->cameraLayout->replaceWidget(&placeholder, big);
     viewsSwapped_ = !viewsSwapped_;
 
-    // small -> main area
-    small->setMinimumSize(640, 420);
-    small->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
-    small->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    small->unsetCursor();
-    small->setToolTip(QString());
+    // smallView -> main area
+    smallView->setMinimumSize(640, 420);
+    smallView->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    smallView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    smallView->unsetCursor();
+    smallView->setToolTip(QString());
     // big -> side slot
     big->setMinimumSize(0, 190);
     big->setMaximumSize(QWIDGETSIZE_MAX, 190);
