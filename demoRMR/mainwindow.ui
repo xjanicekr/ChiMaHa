@@ -1,0 +1,1028 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1280</width>
+    <height>840</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>1180</width>
+    <height>780</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Robot Control – supervízne riadenie</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+QWidget { font-family: "Segoe UI"; font-size: 14px; color: #14243b; }
+QWidget#centralWidget { background-color: #eef1f5; }
+QLabel { background-color: transparent; }
+QFrame#headerBar, QFrame#bottomBar { background-color: #f8f9fb; border: 1px solid #c9d0da; border-radius: 3px; }
+QLabel#titleLabel { font-size: 15px; font-weight: bold; }
+QLabel#connectionStatusLabel { color: #596579; }
+QLabel#connectionDotLabel { color: #808890; font-size: 20px; }
+QGroupBox {
+    background-color: #f8f9fb; border: 1px solid #c9d0da;
+    border-radius: 3px; margin-top: 10px; padding: 4px; padding-top: 12px; font-weight: bold;
+}
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; padding: 0px 4px; color: #152b4b; }
+QGroupBox QLabel, QGroupBox QPushButton, QGroupBox QListWidget, QGroupBox QTableWidget, QGroupBox QCheckBox { font-weight: normal; }
+QPushButton {
+    background-color: #e6eaf0; border: 1px solid #aeb8c6;
+    border-radius: 3px; padding: 6px 12px; min-height: 26px;
+}
+QPushButton:hover { background-color: #dceafa; border-color: #6c9aca; }
+QPushButton:pressed, QPushButton:checked { background-color: #2375bd; border-color: #1b5d96; color: white; }
+QPushButton:focus { border: 2px solid #2375bd; }
+QPushButton:disabled { color: #87909c; background-color: #ebedf0; border-color: #ccd1d8; }
+QPushButton#startMissionButton:enabled, QPushButton#resumeMissionButton:enabled, QPushButton#playButton { background-color: #2375bd; border-color: #1b5d96; color: white; font-weight: bold; }
+QPushButton#abortMissionButton:enabled, QPushButton#deleteRecordButton:enabled { background-color: white; border-color: #b91c1c; color: #b91c1c; }
+QLineEdit, QComboBox {
+    background-color: white; border: 1px solid #aeb8c6;
+    border-radius: 3px; padding: 5px 8px; min-height: 26px;
+}
+QLineEdit:focus, QComboBox:focus { border-color: #2375bd; }
+QComboBox QAbstractItemView {
+    background-color: white; color: #14243b; border: 1px solid #aeb8c6;
+    selection-background-color: #2375bd; selection-color: white; outline: 0;
+}
+QTableWidget QComboBox { padding: 1px 6px; min-height: 0px; border-radius: 0px; }
+QMenu { background-color: white; color: #14243b; border: 1px solid #aeb8c6; padding: 4px 0px; }
+QMenu::item { padding: 6px 24px 6px 24px; background-color: transparent; }
+QMenu::item:selected { background-color: #2375bd; color: white; }
+QMenu::item:disabled { color: #596579; font-weight: bold; }
+QMenu::separator { height: 1px; background: #c9d0da; margin: 4px 8px; }QLineEdit:read-only { background-color: #e9edf2; color: #647084; }
+QListWidget, QTableWidget { background-color: white; border: 1px solid #c9d0da; border-radius: 3px; }
+QTableWidget::item:selected, QListWidget::item:selected { background-color: #dceafa; color: #14243b; }
+QHeaderView::section { background-color: #e6eaf0; border: none; border-bottom: 1px solid #c9d0da; padding: 4px; font-size: 12px; }
+QProgressBar { background-color: #dfe4ea; border: none; border-radius: 5px; max-height: 10px; }
+QProgressBar::chunk { background-color: #0f766e; border-radius: 5px; }
+QWidget#mapView { background-color: #242d38; border: 1px solid #647184; border-radius: 3px; }
+QLabel#cameraLabel { background-color: #2a333e; color: #ccd5df; border-radius: 2px; }
+QLabel#pointsHintLabel { color: #596579; font-size: 12px; }
+QLabel#legendLabel { color: #3c4a5e; font-size: 13px; }
+QLabel#recIndicatorLabel { color: #b91c1c; font-weight: bold; }
+QPushButton#safetyStopButton {
+    background-color: rgba(115, 28, 35, 238); color: white;
+    border: 2px solid #ef9a9a; border-radius: 7px;
+    font-size: 15px; font-weight: bold; padding: 6px;
+}
+QPushButton#safetyStopButton:hover { background-color: #a52a35; border-color: white; }
+QPushButton#safetyStopButton:checked { background-color: #dc2626; border: 2px solid white; }
+QPushButton#safetyStopButton:checked:hover { background-color: #ef4444; }
+</string>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QVBoxLayout" name="mainLayout" stretch="0,1">
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <property name="leftMargin">
+     <number>8</number>
+    </property>
+    <property name="topMargin">
+     <number>8</number>
+    </property>
+    <property name="rightMargin">
+     <number>8</number>
+    </property>
+    <property name="bottomMargin">
+     <number>8</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="headerBar">
+      <layout class="QHBoxLayout" name="headerLayout">
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <property name="leftMargin">
+        <number>10</number>
+       </property>
+       <property name="topMargin">
+        <number>6</number>
+       </property>
+       <property name="rightMargin">
+        <number>10</number>
+       </property>
+       <property name="bottomMargin">
+        <number>6</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="titleLabel">
+         <property name="text">
+          <string>Robot Control</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="ipLabel">
+         <property name="text">
+          <string>IP</string>
+         </property>
+         <property name="buddy">
+          <cstring>lineEdit</cstring>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit">
+         <property name="minimumSize">
+          <size>
+           <width>130</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>160</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>127.0.0.1</string>
+         </property>
+         <property name="placeholderText">
+          <string>IP adresa robota</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_9">
+         <property name="minimumSize">
+          <size>
+           <width>100</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>Pripojiť</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="connectionDotLabel">
+         <property name="text">
+          <string>●</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="connectionStatusLabel">
+         <property name="minimumSize">
+          <size>
+           <width>110</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>Odpojený</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="planModeButton">
+         <property name="text">
+          <string>Plánovanie misie</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+         <property name="autoExclusive">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="recordsModeButton">
+         <property name="text">
+          <string>Záznamy</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="autoExclusive">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="headerSpacer">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="batteryLabel">
+         <property name="toolTip">
+          <string>Stav batérie robota</string>
+         </property>
+         <property name="text">
+          <string>Batéria –</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="alarmCountLabel">
+         <property name="text">
+          <string>Alarmy: 0</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="bodyLayout" stretch="1,0">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <item>
+       <layout class="QVBoxLayout" name="mapColumnLayout" stretch="0,1,0">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <item>
+         <widget class="QWidget" name="alarmContainer">
+          <layout class="QVBoxLayout" name="alarmLayout">
+           <property name="spacing">
+            <number>6</number>
+           </property>
+           <property name="leftMargin">
+            <number>0</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>0</number>
+           </property>
+           <property name="bottomMargin">
+            <number>0</number>
+           </property>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QWidget" name="mapView" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="minimumSize">
+           <size>
+            <width>640</width>
+            <height>420</height>
+           </size>
+          </property>
+          <property name="mouseTracking">
+           <bool>true</bool>
+          </property>
+          <property name="focusPolicy">
+           <enum>Qt::FocusPolicy::StrongFocus</enum>
+          </property>
+          <property name="accessibleName">
+           <string>Mapa – kliknutím pridáte bod misie</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QFrame" name="bottomBar">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>84</height>
+           </size>
+          </property>
+          <layout class="QHBoxLayout" name="bottomLayout">
+           <property name="spacing">
+            <number>12</number>
+           </property>
+           <property name="leftMargin">
+            <number>12</number>
+           </property>
+           <property name="topMargin">
+            <number>8</number>
+           </property>
+           <property name="rightMargin">
+            <number>10</number>
+           </property>
+           <property name="bottomMargin">
+            <number>8</number>
+           </property>
+           <item>
+            <widget class="QStackedWidget" name="bottomStack">
+             <widget class="QWidget" name="planBottomPage">
+              <layout class="QVBoxLayout" name="planBottomLayout">
+               <property name="spacing">
+                <number>6</number>
+               </property>
+               <property name="leftMargin">
+                <number>0</number>
+               </property>
+               <property name="topMargin">
+                <number>0</number>
+               </property>
+               <property name="rightMargin">
+                <number>0</number>
+               </property>
+               <property name="bottomMargin">
+                <number>0</number>
+               </property>
+               <item>
+                <widget class="QLabel" name="legendLabel">
+                 <property name="textFormat">
+                  <enum>Qt::TextFormat::RichText</enum>
+                 </property>
+                 <property name="text">
+                  <string/>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="missionStatusLayout">
+                 <property name="spacing">
+                  <number>10</number>
+                 </property>
+                 <item>
+                  <widget class="QLabel" name="missionStatusLabel">
+                   <property name="text">
+                    <string>PRIPRAVENÉ</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="missionActivityLabel">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text">
+                    <string>Kliknite do mapy a vyberte akciu bodu.</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="recIndicatorLabel">
+                   <property name="text">
+                    <string>● REC</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="replayBottomPage">
+              <layout class="QHBoxLayout" name="replayBottomLayout">
+               <property name="spacing">
+                <number>8</number>
+               </property>
+               <property name="leftMargin">
+                <number>0</number>
+               </property>
+               <property name="topMargin">
+                <number>0</number>
+               </property>
+               <property name="rightMargin">
+                <number>0</number>
+               </property>
+               <property name="bottomMargin">
+                <number>0</number>
+               </property>
+               <item>
+                <widget class="QPushButton" name="toStartButton">
+                 <property name="toolTip">
+                  <string>Na začiatok</string>
+                 </property>
+                 <property name="text">
+                  <string>⏮</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="back5Button">
+                 <property name="toolTip">
+                  <string>Späť o 5 s</string>
+                 </property>
+                 <property name="text">
+                  <string>−5 s</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="playButton">
+                 <property name="minimumSize">
+                  <size>
+                   <width>90</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="text">
+                  <string>Prehrať</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="fwd5Button">
+                 <property name="toolTip">
+                  <string>Dopredu o 5 s</string>
+                 </property>
+                 <property name="text">
+                  <string>+5 s</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <layout class="QVBoxLayout" name="timelineLayout">
+                 <property name="spacing">
+                  <number>2</number>
+                 </property>
+                 <item>
+                  <widget class="QWidget" name="timelineMarks" native="true">
+                   <property name="minimumSize">
+                    <size>
+                     <width>0</width>
+                     <height>14</height>
+                    </size>
+                   </property>
+                   <property name="maximumSize">
+                    <size>
+                     <width>16777215</width>
+                     <height>14</height>
+                    </size>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QSlider" name="timelineSlider">
+                   <property name="orientation">
+                    <enum>Qt::Orientation::Horizontal</enum>
+                   </property>
+                   <property name="accessibleName">
+                    <string>Časová os záznamu</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QLabel" name="timeLabel">
+                 <property name="minimumSize">
+                  <size>
+                   <width>130</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="text">
+                  <string>00:00.0 / 00:00.0</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="speedComboBox">
+                 <property name="toolTip">
+                  <string>Rýchlosť prehrávania</string>
+                 </property>
+                 <property name="currentIndex">
+                  <number>1</number>
+                 </property>
+                 <item>
+                  <property name="text">
+                   <string>0,5×</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>1×</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>2×</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>4×</string>
+                  </property>
+                 </item>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="safetyStopButton">
+             <property name="minimumSize">
+              <size>
+               <width>210</width>
+               <height>64</height>
+              </size>
+             </property>
+             <property name="maximumSize">
+              <size>
+               <width>210</width>
+               <height>64</height>
+              </size>
+             </property>
+             <property name="toolTip">
+              <string>ON zastaví a zablokuje pohyb. OFF len povolí nové príkazy – misiu treba obnoviť tlačidlom Pokračovať.</string>
+             </property>
+             <property name="text">
+              <string>SAFETY STOP
+VYPNUTÝ</string>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+             <property name="autoRepeat">
+              <bool>false</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QWidget" name="sidePanel">
+        <property name="minimumSize">
+         <size>
+          <width>384</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>384</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <layout class="QVBoxLayout" name="sideLayout" stretch="0,1,0">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <widget class="QGroupBox" name="cameraGroup">
+           <property name="title">
+            <string>Kamera</string>
+           </property>
+           <layout class="QVBoxLayout" name="cameraLayout">
+            <property name="leftMargin">
+             <number>6</number>
+            </property>
+            <property name="topMargin">
+             <number>6</number>
+            </property>
+            <property name="rightMargin">
+             <number>6</number>
+            </property>
+            <property name="bottomMargin">
+             <number>6</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="cameraLabel">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>190</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>190</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>Bez obrazu</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignmentFlag::AlignCenter</set>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QStackedWidget" name="sideStack">
+           <widget class="QWidget" name="planSidePage">
+            <layout class="QVBoxLayout" name="planSideLayout" stretch="1,0,0">
+             <property name="spacing">
+              <number>6</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="pointsGroup">
+               <property name="title">
+                <string>Body misie</string>
+               </property>
+               <layout class="QVBoxLayout" name="pointsLayout">
+                <item>
+                 <widget class="QLabel" name="pointsHintLabel">
+                  <property name="text">
+                   <string>Kliknite do mapy a vyberte akciu – bod sa uloží. Ťahaním bod presuniete, pravým tlačidlom ho upravíte.</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QTableWidget" name="pointsTable">
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>120</height>
+                   </size>
+                  </property>
+                  <property name="editTriggers">
+                   <set>QAbstractItemView::EditTrigger::NoEditTriggers</set>
+                  </property>
+                  <property name="selectionMode">
+                   <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
+                  </property>
+                  <property name="selectionBehavior">
+                   <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
+                  </property>
+                  <attribute name="verticalHeaderVisible">
+                   <bool>false</bool>
+                  </attribute>
+                  <attribute name="horizontalHeaderStretchLastSection">
+                   <bool>true</bool>
+                  </attribute>
+                  <column>
+                   <property name="text">
+                    <string>#</string>
+                   </property>
+                  </column>
+                  <column>
+                   <property name="text">
+                    <string>Typ / úloha</string>
+                   </property>
+                  </column>
+                  <column>
+                   <property name="text">
+                    <string>x, y [m]</string>
+                   </property>
+                  </column>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="pointButtonsLayout">
+                  <item>
+                   <widget class="QPushButton" name="pointUpButton">
+                    <property name="toolTip">
+                     <string>Posunúť bod vyššie</string>
+                    </property>
+                    <property name="text">
+                     <string>▲</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="pointDownButton">
+                    <property name="toolTip">
+                     <string>Posunúť bod nižšie</string>
+                    </property>
+                    <property name="text">
+                     <string>▼</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="pointDeleteButton">
+                    <property name="text">
+                     <string>Zmazať bod</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="clearMissionButton">
+                    <property name="text">
+                     <string>Vymazať misiu</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="missionGroup">
+               <property name="title">
+                <string>Vykonanie misie</string>
+               </property>
+               <layout class="QVBoxLayout" name="missionGroupLayout">
+                <item>
+                 <widget class="QLabel" name="validationLabel">
+                  <property name="text">
+                   <string/>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="missionButtonsLayout">
+                  <item>
+                   <widget class="QPushButton" name="startMissionButton">
+                    <property name="text">
+                     <string>Spustiť</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="pauseMissionButton">
+                    <property name="text">
+                     <string>Pozastaviť</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="resumeMissionButton">
+                    <property name="text">
+                     <string>Pokračovať</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="abortMissionButton">
+                    <property name="text">
+                     <string>Prerušiť</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="foundGroup">
+               <property name="title">
+                <string>Nájdené objekty</string>
+               </property>
+               <layout class="QVBoxLayout" name="foundLayout">
+                <item>
+                 <widget class="QListWidget" name="foundList">
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>80</height>
+                   </size>
+                  </property>
+                  <property name="maximumSize">
+                   <size>
+                    <width>16777215</width>
+                    <height>150</height>
+                   </size>
+                  </property>
+                  <property name="toolTip">
+                   <string>Kliknutím objekt zvýrazníte v mape</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="recordsSidePage">
+            <layout class="QVBoxLayout" name="recordsSideLayout" stretch="1,0,0">
+             <property name="spacing">
+              <number>6</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="recordsGroup">
+               <property name="title">
+                <string>Uložené záznamy (nahrávané automaticky)</string>
+               </property>
+               <layout class="QVBoxLayout" name="recordsLayout">
+                <item>
+                 <widget class="QListWidget" name="recordsList"/>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="recordButtonsLayout">
+                  <item>
+                   <widget class="QPushButton" name="refreshRecordsButton">
+                    <property name="text">
+                     <string>Obnoviť</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="deleteRecordButton">
+                    <property name="text">
+                     <string>Vymazať záznam</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="layersGroup">
+               <property name="title">
+                <string>Vrstvy prehrávania</string>
+               </property>
+               <layout class="QVBoxLayout" name="layersLayout">
+                <item>
+                 <widget class="QCheckBox" name="layerAmclCheck">
+                  <property name="text">
+                   <string>Poloha AMCL (trajektória)</string>
+                  </property>
+                  <property name="checked">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="layerOdomCheck">
+                  <property name="text">
+                   <string>Odometria (trajektória)</string>
+                  </property>
+                  <property name="checked">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="layerLidarCheck">
+                  <property name="text">
+                   <string>Lidar sken</string>
+                  </property>
+                  <property name="checked">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="layerCameraCheck">
+                  <property name="text">
+                   <string>Kamera</string>
+                  </property>
+                  <property name="checked">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="replayInfoGroup">
+               <property name="title">
+                <string>Stav v čase záznamu</string>
+               </property>
+               <layout class="QVBoxLayout" name="replayInfoLayout">
+                <item>
+                 <widget class="QLabel" name="replayAmclLabel">
+                  <property name="text">
+                   <string>AMCL: –</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="replayOdomLabel">
+                  <property name="text">
+                   <string>Odometria: –</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="replayDriftLabel">
+                  <property name="text">
+                   <string>Odchýlka odometrie: –</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="replayEventLabel">
+                  <property name="text">
+                   <string>Udalosť: –</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="logGroup">
+           <property name="title">
+            <string>Udalosti a alarmy</string>
+           </property>
+           <layout class="QVBoxLayout" name="logLayout">
+            <item>
+             <widget class="QListWidget" name="logList">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>90</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>130</height>
+               </size>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <tabstops>
+  <tabstop>lineEdit</tabstop>
+  <tabstop>pushButton_9</tabstop>
+  <tabstop>planModeButton</tabstop>
+  <tabstop>recordsModeButton</tabstop>
+  <tabstop>mapView</tabstop>
+  <tabstop>safetyStopButton</tabstop>
+  <tabstop>pointsTable</tabstop>
+  <tabstop>startMissionButton</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>
