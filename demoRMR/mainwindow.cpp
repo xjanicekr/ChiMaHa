@@ -364,15 +364,14 @@ void MainWindow::startRobotSession(const QString &address, bool simulation)
         handleScan(points, raw);
     }, Qt::QueuedConnection);
 #if DEMO_HAS_AMCL
-    // AMCL pose: millimetres in the grid frame of mapa.txt (file row 0 at y = 0, y grows down the
-    // file, theta in rad measured towards +y). The HMI map frame is metres with y up (file row 0
-    // drawn at the top), so y is mirrored about the map height and theta changes sign.
+    // AMCL pose (librobot 1.2.1): millimetres, y up (file row 0 is the top of the map), theta in rad
+    // counter-clockwise. That is the same orientation as the HMI map frame, so only mm -> m is needed.
     connect(robot_, &robot::publishAMCLPosition, this, [this, id](double x, double y, double theta){
         if (id != sessionId_ || !robot_ || !mapLoaded_) return;
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(theta)) return;
         const double mx = x / 1000.0;
-        const double my = 2.0 * mapOrigin_.y() + mapH_ * mapRes_ - y / 1000.0;
-        setRobotPose(mx, my, normAngle(-theta));
+        const double my = y / 1000.0;
+        setRobotPose(mx, my, normAngle(theta));
     }, Qt::QueuedConnection);
 #endif
     robot_->initAndStartRobot(address.toStdString());
