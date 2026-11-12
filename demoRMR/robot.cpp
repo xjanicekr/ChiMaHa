@@ -7,6 +7,19 @@
 
 robot::robot(QObject *parent) : QObject(parent)
 {
+    /// pociatocne hodnoty - bez nich maju premenne nahodny obsah (MSVC Debug: 0xCDCDCDCD)
+    /// a processThisCamera() by zapisoval mimo pola frame[3]
+    x = y = fi = 0;
+    forwardspeed = rotationspeed = 0;
+    datacounter = 0;
+    useDirectCommands = 1;
+#ifndef DISABLE_OPENCV
+    useCamera1 = false;
+    actIndex = -1;
+#endif
+#ifndef DISABLE_SKELETON
+    updateSkeletonPicture = 0;
+#endif
     qRegisterMetaType<LaserMeasurement>("LaserMeasurement");
     #ifndef DISABLE_OPENCV
     qRegisterMetaType<cv::Mat>("cv::Mat");
