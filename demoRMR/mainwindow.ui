@@ -584,7 +584,7 @@ VYPNUTÝ</string>
           <height>16777215</height>
          </size>
         </property>
-        <layout class="QVBoxLayout" name="sideLayout" stretch="0,1,0">
+        <layout class="QVBoxLayout" name="sideLayout" stretch="0,1">
          <property name="spacing">
           <number>6</number>
          </property>
@@ -957,6 +957,16 @@ VYPNUTÝ</string>
                  </widget>
                 </item>
                 <item>
+                 <widget class="QLabel" name="replayStartLabel">
+                  <property name="toolTip">
+                   <string>Poloha robota v počiatočnom súradnicovom systéme (robot na štarte misie: x dopredu, y doľava)</string>
+                  </property>
+                  <property name="text">
+                   <string>Voči štartu misie: –</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="QLabel" name="replayDriftLabel">
                   <property name="text">
                    <string>Odchýlka odometrie: –</string>
@@ -978,31 +988,6 @@ VYPNUTÝ</string>
              </item>
             </layout>
            </widget>
-          </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="logGroup">
-           <property name="title">
-            <string>Udalosti a alarmy</string>
-           </property>
-           <layout class="QVBoxLayout" name="logLayout">
-            <item>
-             <widget class="QListWidget" name="logList">
-              <property name="minimumSize">
-               <size>
-                <width>0</width>
-                <height>90</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>16777215</width>
-                <height>130</height>
-               </size>
-              </property>
-             </widget>
-            </item>
-           </layout>
           </widget>
          </item>
         </layout>

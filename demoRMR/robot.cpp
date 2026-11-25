@@ -1,4 +1,21 @@
 #include "robot.h"
+#include <algorithm>
+#include <cmath>
+
+namespace {
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kTickToMeter = 0.000085292090497737556558; // Kobuki: dlzka jedneho tiku enkodera [m]
+constexpr double kWheelBase = 0.230;                        // Kobuki: vzdialenost kolies [m]
+constexpr double kBatteryEmpty = 13.2;                      // [V] vybita bateria
+constexpr double kBatteryFull = 16.7;                       // [V] plne nabita bateria
+
+double normalizeAngle(double a)
+{
+    while (a > kPi) a -= 2.0 * kPi;
+    while (a <= -kPi) a += 2.0 * kPi;
+    return a;
+}
+}
 
 #if DEMO_HAS_AMCL
 #include <QCoreApplication>
@@ -76,14 +93,16 @@ void robot::setSpeedVal(double forw, double rots)
 
 void robot::setSpeed(double forw, double rots)
 {
-    if(forw==0 && rots!=0)
-        robotCom.setRotationSpeed(rots);
-    else if(forw!=0 && rots==0)
-        robotCom.setTranslationSpeed(forw);
-    else if((forw!=0 && rots!=0))
-        robotCom.setArcSpeed(forw,forw/rots);
-    else
+    /// oblúk: polomer = v / omega [mm]. Kobuki ho berie ako 16-bitové číslo, preto takmer rovná jazda
+    /// (polomer nad 30 m) ide ako priamy pohyb a polomer pod 10 mm ako otáčanie na mieste
+    if(forw==0 && rots==0)
         robotCom.setTranslationSpeed(0);
+    else if(forw==0 || std::abs(forw/rots)<10.0)
+        robotCom.setRotationSpeed(rots);
+    else if(rots==0 || std::abs(forw/rots)>30000.0)
+        robotCom.setTranslationSpeed(forw);
+    else
+        robotCom.setArcSpeed(forw,static_cast<int>(std::lround(forw/rots)));
     useDirectCommands=1;
 }
 
@@ -95,6 +114,11 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
     ///tu mozete robit s datami z robota
     emit telemetryReceived();
+    updateOdometry(robotdata);
+    updateBattery(robotdata);
+    /// odometria ide do HMI pri kazdom pakete (nie kazdy piaty) - HMI podla nej plynulo posuva robota
+    /// medzi AMCL polohami (~7 Hz) a prekreslovanie mapy si obmedzuje samo
+    emit publishPosition(x, y, fi);
 
 
 
@@ -112,8 +136,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         /// lepsi pristup je nastavit len nejaku premennu, a poslat signal oknu na prekreslenie
         /// okno pocuva vo svojom slote a vasu premennu nastavi tak ako chcete. prikaz emit to presne takto spravi
         /// viac o signal slotoch tu: https://doc.qt.io/qt-5/signalsandslots.html
-        ///posielame sem nezmysli.. pohrajte sa nech sem idu zmysluplne veci
-        emit publishPosition(robotdata.EncoderLeft,y,fi);
+        /// (publishPosition sa posiela vyssie, pri kazdom pakete)
         ///toto neodporucam na nejake komplikovane struktury.signal slot robi kopiu dat. radsej vtedy posielajte
         /// prazdny signal a slot bude vykreslovat strukturu (vtedy ju musite mat samozrejme ako member premmennu v mainwindow.ak u niekoho najdem globalnu premennu,tak bude cistit bludisko zubnou kefkou.. kefku dodam)
         /// vtedy ale odporucam pouzit mutex, aby sa vam nestalo ze budete pocas vypisovania prepisovat niekde inde
@@ -135,6 +158,51 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
     return 0;
 
+}
+
+/// Odometria: draha z enkoderov, uhol z gyra (ak gyro neposiela data, tak z enkoderov).
+/// Rozdiely enkoderov sa pocitaju v 16 bitoch, takze ich pretecenie nevadi.
+void robot::updateOdometry(const TKobukiData &robotdata)
+{
+    if (!odomInit_) {
+        prevEncLeft_ = robotdata.EncoderLeft;
+        prevEncRight_ = robotdata.EncoderRight;
+        prevGyro_ = robotdata.GyroAngle;
+        odomInit_ = true;
+        return;
+    }
+    const short dTicksLeft = static_cast<short>(robotdata.EncoderLeft - prevEncLeft_);
+    const short dTicksRight = static_cast<short>(robotdata.EncoderRight - prevEncRight_);
+    int dGyro = robotdata.GyroAngle - prevGyro_;   // GyroAngle je -18000..18000 (stotiny stupna)
+    if (dGyro > 18000) dGyro -= 36000;             // prechod cez +-180 st. (inak skok o ~295 st.)
+    else if (dGyro < -18000) dGyro += 36000;
+    prevEncLeft_ = robotdata.EncoderLeft;
+    prevEncRight_ = robotdata.EncoderRight;
+    prevGyro_ = robotdata.GyroAngle;
+
+    const double dLeft = dTicksLeft * kTickToMeter;
+    const double dRight = dTicksRight * kTickToMeter;
+    const double ds = (dLeft + dRight) / 2.0;
+    if (dGyro != 0) gyroValid_ = true;
+    const double dfi = gyroValid_ ? dGyro / 100.0 * kPi / 180.0
+                                  : (dRight - dLeft) / kWheelBase;
+
+    // integracia so stredovym uhlom (presnejsie pri pohybe po obluku)
+    x += ds * std::cos(fi + dfi / 2.0);
+    y += ds * std::sin(fi + dfi / 2.0);
+    fi = normalizeAngle(fi + dfi);
+}
+
+/// Bateria Kobuki: napatie v 0.1 V, prepocet na % medzi vybitou a plnou baterou.
+void robot::updateBattery(const TKobukiData &robotdata)
+{
+    if (robotdata.Battery == 0) return;   // robot (simulator) napatie neposiela
+    const double volts = robotdata.Battery / 10.0;
+    const int percent = static_cast<int>(std::lround(
+        std::clamp((volts - kBatteryEmpty) / (kBatteryFull - kBatteryEmpty), 0.0, 1.0) * 100.0));
+    if (percent == lastBatteryPercent_) return;
+    lastBatteryPercent_ = percent;
+    emit publishBattery(percent);
 }
 
 #if DEMO_HAS_AMCL

@@ -50,7 +50,10 @@ public:
 #endif
 signals:
   void telemetryReceived(); // emitted on every Kobuki packet (HMI connection watchdog)
-  void publishPosition(double x, double y, double z);
+  // Odometria v suradnicovom systeme startu robota: x, y [m], theta [rad] proti smeru hodinovych ruciciek.
+  void publishPosition(double x, double y, double theta);
+  // Stav baterie v % (posiela sa len pri zmene a ked robot hlasi platne napatie).
+  void publishBattery(int percent);
   void publishLidar(const std::vector<LaserData> &lidata);
 #if DEMO_HAS_AMCL
   void publishAMCLPosition(double x, double y, double theta);
@@ -63,9 +66,17 @@ signals:
 #endif
 private:
   /// toto su vase premenne na vasu odometriu
-  double x;
-  double y;
-  double fi;
+  double x;   // [m]
+  double y;   // [m]
+  double fi;  // [rad]
+  bool odomInit_ = false;          // prvy paket iba ulozi pociatocne hodnoty enkoderov/gyra
+  unsigned short prevEncLeft_ = 0;
+  unsigned short prevEncRight_ = 0;
+  short prevGyro_ = 0;
+  bool gyroValid_ = false;         // gyro sa aspon raz zmenilo -> uhol z gyra, inak z enkoderov
+  int lastBatteryPercent_ = -1;
+  void updateOdometry(const TKobukiData &robotdata);
+  void updateBattery(const TKobukiData &robotdata);
   ///-----------------------------
   /// toto su rychlosti ktore sa nastavuju setSpeedVal a posielaju v
   /// processThisRobot

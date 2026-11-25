@@ -83,6 +83,11 @@ private:
     void handleScan(const QVector<QPointF> &robotPointsMm, const QVector<QPointF> &rawAngleDist);
     void handleCameraFrame(const QImage &rgb);
     void sendSpeed(double forward, double rotation);
+    void handleOdometry(double x, double y, double theta);   // odometry in the robot's start frame
+    void anchorOdometry();                                   // align odometry with the current AMCL pose
+    void viewPoseChanged();                                  // trail + repaint after the drawn pose moved
+    void resumePlanning();                                   // finished mission -> planning again (on edit/start)
+    void renderTick();                                       // ~60 Hz: the drawn robot follows the estimate
 
     // --- map ---
     bool loadMap(const QString &path);   // AMCL map file (mapa.txt)
@@ -135,6 +140,7 @@ private:
     void layoutOverlays();
     void setMode(Mode mode);
     void swapViews();                    // map <-> camera between the main area and the side slot
+    void toggleBottomBar();              // Ctrl+H: hide / show the bottom bar (SAFETY STOP moves to the header)
     void updateViewTitles();
 
     // --- recording ---
@@ -145,7 +151,8 @@ private:
     qint64 missionTimeMs() const;
 
     // --- playback ---
-    struct RecSample { qint64 t; Pose amcl, odom; };
+    // view = pose drawn during the mission, start = pose relative to the mission start (odometry)
+    struct RecSample { qint64 t; Pose amcl, odom, view, start; };
     struct RecScan { qint64 t; QVector<QPointF> points; };   // robot frame mm
     struct RecFrame { qint64 t; QString file; };
     struct RecEvent { qint64 t; QString type, text; };
@@ -158,6 +165,7 @@ private:
         QVector<RecEvent> events;
         QVector<Detection> detections;
         qint64 duration = 0;
+        bool hasStart = false;           // poses.csv has start_* (older recordings do not)
     };
     void refreshRecords();
     bool loadRecording(const QString &dir);
@@ -166,6 +174,7 @@ private:
     void seekPlayback(qint64 t);
     void playbackTick();
     void showReplayFrame();
+    Pose recordedPoseAt(qint64 t, Pose RecSample::*which) const;   // interpolated between the 10 Hz samples
 
     // --- object detection ---
     bool detectTarget(const QImage &rgb, QRectF &box, double &confidence) const;
@@ -192,12 +201,26 @@ private:
     QImage cameraImage_;
     QVector<QPointF> lidarPoints_;       // robot frame, mm: x forward, y right
     QVector<QPointF> lidarRaw_;          // (angle deg clockwise, distance mm) for recording
-    unsigned scanSerial_ = 0;
     double lastForward_ = 1e9, lastRotation_ = 1e9;
+    QElapsedTimer speedSent_;            // when the last speed command went to the robot (sendSpeed)
 
     // robot state
     Pose pose_, odom_;
     bool hasPose_ = false, hasOdom_ = false;
+    Pose odomRaw_, odomAnchorRaw_, odomAnchorMap_;   // raw odometry and the raw/map poses it is aligned at
+    Pose odomStart_;                     // odometry pose relative to the mission start: the robot frame at the
+                                         // start (x forward, y left, θ CCW), (0, 0, 0) when the mission starts
+    bool hasOdomRaw_ = false, odomAnchored_ = false;
+    Pose viewPose_;                      // drawn pose: odometry between AMCL updates, pulled towards AMCL
+    Pose scanPose_;                      // drawn pose when the shown lidar scan arrived
+    Pose drawPose_;                      // pose actually drawn: follows viewPose_ smoothly (renderTick)
+    QElapsedTimer amclJump_;             // how long AMCL has reported a pose far from viewPose_
+    Pose amclJumpOffset_;                // that far pose relative to viewPose_ (dx, dy, dth)
+    double taskTurned_ = 0.0;            // rotate/search task: angle turned so far (odometry) [rad]
+    double taskLastTh_ = 0.0;            // odometry heading at the previous mission tick [rad]
+    QTimer renderTimer_;                 // ~60 Hz redraw of the moving robot
+    QElapsedTimer renderClock_;
+    double rampSpeed_ = 0.0;             // forward speed after the acceleration ramp [mm/s]
     int battery_ = -1;                   // -1 = unknown
     bool obstacleAhead_ = false;
     double locQuality_ = 1.0;
@@ -250,7 +273,6 @@ private:
     QTimer recordTimer_;
     std::unique_ptr<QFile> posesFile_, scanFile_, cameraFile_, eventsFile_, detFile_;
     QTextStream posesOut_, scanOut_, cameraOut_, eventsOut_, detOut_;
-    unsigned lastRecordedScan_ = 0;
     QElapsedTimer cameraRecordAge_;
     int cameraFrameNo_ = 0;
     int photoNo_ = 0;
@@ -262,7 +284,7 @@ private:
     QTimer playbackTimer_;
     QElapsedTimer playbackClock_;
     double playSpeed_ = 1.0;
-    Pose replayPose_, replayOdom_;
+    Pose replayPose_, replayOdom_, replayView_, replayScanPose_, replayStart_;
     QVector<QPointF> replayScan_;
     QImage replayImage_;
     QString replayImageFile_;

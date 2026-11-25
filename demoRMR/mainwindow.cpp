@@ -21,7 +21,9 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QKeySequence>
 #include <QRegularExpression>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <algorithm>
 #include <functional>
@@ -40,7 +42,22 @@ constexpr double kCameraFovDeg = 60.0;     // horizontal camera field of view
 constexpr double kLocThreshold = 0.5;      // scan/map match below this = robot mimo misie
 constexpr int kLocTimeoutMs = 2000;
 constexpr double kRotateSpeed = 0.8;       // rad/s for rotate/search tasks
+constexpr qint64 kSpeedResendMs = 500;     // an unchanged speed command is sent again after this time
 constexpr int kTelemetryTimeoutMs = 2000;
+constexpr double kViewBlend = 0.2;         // share of the AMCL correction applied to the drawn pose per update
+constexpr double kViewSnapDist = 0.5;      // [m] a larger AMCL/drawn difference is taken at once
+constexpr double kViewSnapAngle = 0.5;     // [rad]
+constexpr int kViewJumpHoldMs = 1000;      // a far AMCL pose must last this long to be taken (else = AMCL glitch)
+constexpr double kDrawLag = 0.1;           // [s] the drawn robot follows the estimate with this time constant
+// Combined (združený) go-to controller, see driveToGoal()
+constexpr double kMaxForward = 300.0;      // forward speed limit [mm/s]
+constexpr double kMinForward = 80.0;       // lowest forward speed while driving to a point [mm/s]
+constexpr double kForwardGain = 600.0;     // forward speed per metre to the point [mm/s per m]
+constexpr double kRotationGain = 1.5;      // rotation per radian of heading error [1/s]
+constexpr double kMaxRotation = 0.7;       // rotation limit [rad/s]
+constexpr double kTurnInPlace = 1.05;      // heading error above which the robot first turns on the spot [rad] (60°)
+constexpr double kMaxAccel = 300.0;        // forward acceleration ramp [mm/s^2]
+constexpr double kObstacleFacingAngle = 0.17; // obstacle ahead: turn on the spot until the point is within 10°
 const char *kTargetName = "Červená lopta";
 
 const QColor kOpColor("#00008B");
@@ -49,6 +66,7 @@ const QColor kRouteColor("#2375bd");
 const QColor kCollisionColor("#dc2626");
 const QColor kTrailColor("#0f766e");
 const QColor kOdomColor("#d97706");
+const QColor kAmclColor("#2563eb");        // raw AMCL data in the replay
 const QColor kDetColor("#6d28d9");
 const QColor kRobotColor("#14243b");
 
@@ -181,6 +199,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->pointDownButton, &QPushButton::clicked, this, [this]{ movePoint(1); });
     connect(ui->pointDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteSelectedPoint);
     connect(ui->clearMissionButton, &QPushButton::clicked, this, &MainWindow::clearMission);
+    connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_H), this), &QShortcut::activated,
+            this, &MainWindow::toggleBottomBar);
     connect(ui->pointsTable, &QTableWidget::currentCellChanged, this, [this](int row){
         if (!tableUpdating_) selectPoint(row);
     });
@@ -221,6 +241,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(this, &MainWindow::disconnectRequested, this, [this]{ endRobotSession(); });
     connect(this, &MainWindow::stopRequested, this, [this]{
         lastForward_ = lastRotation_ = 0.0;
+        rampSpeed_ = 0.0;   // after a pause / safety stop the robot speeds up along the ramp again
         if (robot_ && connected_) robot_->setSpeed(0, 0);
     });
 
@@ -231,7 +252,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(&recordTimer_, &QTimer::timeout, this, &MainWindow::recordTick);
     recordTimer_.setInterval(100);
     connect(&playbackTimer_, &QTimer::timeout, this, &MainWindow::playbackTick);
-    playbackTimer_.setInterval(50);
+    playbackTimer_.setTimerType(Qt::PreciseTimer);
+    playbackTimer_.setInterval(20);
+    // The moving robot is redrawn ~60x per second and follows the estimate smoothly (renderTick).
+    connect(&renderTimer_, &QTimer::timeout, this, &MainWindow::renderTick);
+    renderTimer_.setTimerType(Qt::PreciseTimer);
+    renderTimer_.start(16);
 
     setConnectionState(false);
     setSafetyStopActive(false);
@@ -335,6 +361,14 @@ void MainWindow::startRobotSession(const QString &address, bool simulation)
         telemetryAge_.restart();
         if (!connected_) setConnectionState(true);
     }, Qt::QueuedConnection);
+    connect(robot_, &robot::publishPosition, this, [this, id](double x, double y, double theta){
+        if (id != sessionId_ || !robot_) return;
+        handleOdometry(x, y, theta);
+    }, Qt::QueuedConnection);
+    connect(robot_, &robot::publishBattery, this, [this, id](int percent){
+        if (id != sessionId_ || !robot_) return;
+        setBatteryLevel(percent);
+    }, Qt::QueuedConnection);
 #ifndef DISABLE_OPENCV
     connect(robot_, &robot::publishCamera, this, [this, id](const cv::Mat &frame){
         if (id != sessionId_ || !robot_ || frame.empty() || frame.depth() != CV_8U) return;
@@ -366,12 +400,14 @@ void MainWindow::startRobotSession(const QString &address, bool simulation)
 #if DEMO_HAS_AMCL
     // AMCL pose (librobot 1.2.1): millimetres, y up (file row 0 is the top of the map), theta in rad
     // counter-clockwise. That is the same orientation as the HMI map frame, so only mm -> m is needed.
+    // Checked with libRobot::getGridCoordinates(): y = 6650 mm -> file row 0, y = 50 mm -> last row.
     connect(robot_, &robot::publishAMCLPosition, this, [this, id](double x, double y, double theta){
         if (id != sessionId_ || !robot_ || !mapLoaded_) return;
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(theta)) return;
         const double mx = x / 1000.0;
         const double my = y / 1000.0;
         setRobotPose(mx, my, normAngle(theta));
+        if (!odomAnchored_) anchorOdometry();   // first AMCL pose places the odometry on the map
     }, Qt::QueuedConnection);
 #endif
     robot_->initAndStartRobot(address.toStdString());
@@ -389,6 +425,7 @@ void MainWindow::endRobotSession(const QString &message)
     }
     imageAge_.invalidate();
     lastForward_ = lastRotation_ = 1e9;
+    hasOdomRaw_ = odomAnchored_ = hasOdom_ = false;   // a new session starts a new odometry
     if (ui) setConnectionState(false, message);
 }
 
@@ -409,11 +446,16 @@ void MainWindow::checkRobotSession()
 
 void MainWindow::sendSpeed(double forward, double rotation)
 {
-    if (!robot_ || !connected_) return;
     if (safetyStopActive_) { forward = 0; rotation = 0; }
-    if (forward == lastForward_ && rotation == lastRotation_) return;
+    if (forward == 0) rampSpeed_ = 0;   // after any stop the robot speeds up along the ramp again
+    if (!robot_ || !connected_) return;
+    // The real robot stops by itself when no new command arrives for ~3 s (the simulator does not), so
+    // an unchanged command is sent again every kSpeedResendMs - e.g. the whole 360° turn of a task.
+    if (forward == lastForward_ && rotation == lastRotation_ && speedSent_.isValid()
+            && speedSent_.elapsed() < kSpeedResendMs) return;
     lastForward_ = forward;
     lastRotation_ = rotation;
+    speedSent_.start();
     robot_->setSpeed(forward, rotation);
 }
 
@@ -421,7 +463,12 @@ void MainWindow::handleScan(const QVector<QPointF> &robotPointsMm, const QVector
 {
     lidarPoints_ = robotPointsMm;
     lidarRaw_ = rawAngleDist;
-    ++scanSerial_;
+    scanPose_ = viewPose_;   // the scan is drawn where it was measured, not dragged along with the robot
+    if (recording_) {        // every scan with its arrival time; the replay draws it at the pose of that time
+        scanOut_ << missionTimeMs() << ',' << lidarRaw_.size();
+        for (const QPointF &a : lidarRaw_) scanOut_ << ',' << QString::number(a.x(), 'f', 2) << ',' << QString::number(a.y(), 'f', 0);
+        scanOut_ << '\n';
+    }
 
     // Obstacle in the driving corridor in front of the robot.
     const double halfWidth = kRobotRadius * 1000.0 + 40.0;
@@ -497,17 +544,129 @@ void MainWindow::setRobotPose(double x, double y, double theta)
     const bool first = !hasPose_;
     hasPose_ = true;
     if (!hasOdom_) odom_ = pose_;
-    if (missionState_ == MissionState::Running
-            && (trail_.isEmpty() || std::hypot(trail_.last().x() - x, trail_.last().y() - y) > 0.05))
-        trail_.append(QPointF(x, y));
+
+    // The drawn pose moves with the odometry between AMCL updates (handleOdometry) and each AMCL pose
+    // pulls it part of the way, which hides the AMCL jitter. The first pose or missing odometry take
+    // the AMCL pose as it is.
+    // A large difference is either an AMCL glitch (AMCL sometimes reports a pose metres away and turned
+    // ~90-180° for 0.1-0.2 s, mostly while the robot turns, and then returns) or a relocalization. It is
+    // taken only when AMCL keeps it, at the same offset, for kViewJumpHoldMs; shorter ones are ignored.
+    const double ex = x - viewPose_.x, ey = y - viewPose_.y;
+    const double dth = normAngle(theta - viewPose_.th);
+    const bool farAway = std::hypot(ex, ey) > kViewSnapDist || std::abs(dth) > kViewSnapAngle;   // (not "far": Windows macro)
+    if (first || !hasOdomRaw_) {
+        viewPose_ = pose_;
+        if (first) scanPose_ = drawPose_ = pose_;
+        amclJump_.invalidate();
+    } else if (!farAway) {
+        amclJump_.invalidate();
+        viewPose_.x += kViewBlend * ex;
+        viewPose_.y += kViewBlend * ey;
+        viewPose_.th = normAngle(viewPose_.th + kViewBlend * dth);
+    } else {
+        const bool sameJump = amclJump_.isValid()
+                && std::hypot(ex - amclJumpOffset_.x, ey - amclJumpOffset_.y) < 0.3
+                && std::abs(normAngle(dth - amclJumpOffset_.th)) < 0.3;
+        if (!sameJump) {
+            amclJump_.start();
+            amclJumpOffset_ = {ex, ey, dth};
+        } else if (amclJump_.elapsed() >= kViewJumpHoldMs) {
+            amclJump_.invalidate();
+            viewPose_ = pose_;
+            addLog(QString::fromUtf8("Lokalizácia: poloha robota prevzatá z AMCL (relokalizácia)"), LogLevel::Warning);
+        }
+    }
+    viewPoseChanged();
     if (first) updateValidation();
-    if (mode_ == Mode::Planning) ui->mapView->update();
+}
+
+// A finished (or aborted) mission stays on the map as executed. Any edit of the points or Spustiť
+// starts planning again: the route is then drawn and checked from the robot's current position.
+void MainWindow::resumePlanning()
+{
+    if (missionState_ != MissionState::Done && missionState_ != MissionState::Aborted) return;
+    missionState_ = MissionState::Idle;
+    trail_.clear();
+    updateMissionUi();
+    updateValidation();
+}
+
+// The estimate moved: extend the mission trail. The map is repainted by renderTick.
+void MainWindow::viewPoseChanged()
+{
+    if (missionState_ == MissionState::Running
+            && (trail_.isEmpty() || std::hypot(trail_.last().x() - viewPose_.x, trail_.last().y() - viewPose_.y) > 0.05))
+        trail_.append(QPointF(viewPose_.x, viewPose_.y));
+}
+
+// ~60x per second: the drawn robot (drawPose_) follows the estimate (viewPose_) with the time constant
+// kDrawLag. Odometry arrives irregularly (the simulator sends 3-8 packets per 100 ms), so drawing the
+// estimate directly jerks. Large jumps (relocalization) are taken at once.
+void MainWindow::renderTick()
+{
+    const double dt = renderClock_.isValid() ? renderClock_.restart() / 1000.0 : 0.0;
+    if (!renderClock_.isValid()) renderClock_.start();
+    if (!hasPose_ || mode_ != Mode::Planning) return;
+    const double dx = viewPose_.x - drawPose_.x, dy = viewPose_.y - drawPose_.y;
+    const double dth = normAngle(viewPose_.th - drawPose_.th);
+    if (std::hypot(dx, dy) > kViewSnapDist || std::abs(dth) > kViewSnapAngle) {
+        drawPose_ = viewPose_;
+    } else {
+        if (std::hypot(dx, dy) < 0.0005 && std::abs(dth) < 0.001) return;   // already there: no repaint
+        const double k = 1.0 - std::exp(-dt / kDrawLag);
+        drawPose_.x += k * dx;
+        drawPose_.y += k * dy;
+        drawPose_.th = normAngle(drawPose_.th + k * dth);
+    }
+    ui->mapView->update();
 }
 
 void MainWindow::setOdometryPose(double x, double y, double theta)
 {
     odom_ = {x, y, theta};
     hasOdom_ = true;
+}
+
+// Odometry from the robot is relative to where the robot started. It is placed on the map by
+// the transform that maps the raw pose at the anchor time onto the AMCL pose at that time.
+void MainWindow::handleOdometry(double x, double y, double theta)
+{
+    if (hasOdomRaw_ && hasPose_) {
+        // Motion since the previous sample, in the robot frame, moves the drawn pose between AMCL updates.
+        const double dx = x - odomRaw_.x, dy = y - odomRaw_.y;
+        const double c = std::cos(odomRaw_.th), s = std::sin(odomRaw_.th);
+        const double fwd = c * dx + s * dy, left = -s * dx + c * dy;
+        const double dth = normAngle(theta - odomRaw_.th);
+        if (fwd != 0.0 || left != 0.0 || dth != 0.0) {
+            const double cv = std::cos(viewPose_.th), sv = std::sin(viewPose_.th);
+            viewPose_.x += cv * fwd - sv * left;
+            viewPose_.y += sv * fwd + cv * left;
+            viewPose_.th = normAngle(viewPose_.th + dth);
+            viewPoseChanged();
+        }
+    }
+    odomRaw_ = {x, y, theta};
+    hasOdomRaw_ = true;
+    if (!odomAnchored_) { if (hasPose_) anchorOdometry(); return; }
+
+    const Pose &a = odomAnchorRaw_, &m = odomAnchorMap_;
+    const double dx = x - a.x, dy = y - a.y;
+    const double ca = std::cos(a.th), sa = std::sin(a.th);
+    const double lx = ca * dx + sa * dy;          // motion since the anchor, in the anchor's robot frame
+    const double ly = -sa * dx + ca * dy;
+    const double cm = std::cos(m.th), sm = std::sin(m.th);
+    setOdometryPose(m.x + cm * lx - sm * ly, m.y + sm * lx + cm * ly, normAngle(m.th + theta - a.th));
+    odomStart_ = {lx, ly, normAngle(theta - a.th)};   // the same motion in the start coordinate frame
+}
+
+void MainWindow::anchorOdometry()
+{
+    if (!hasPose_ || !hasOdomRaw_) return;
+    odomAnchorRaw_ = odomRaw_;
+    odomAnchorMap_ = pose_;
+    odomAnchored_ = true;
+    setOdometryPose(pose_.x, pose_.y, pose_.th);
+    odomStart_ = {};
 }
 
 void MainWindow::setBatteryLevel(int percent)
@@ -702,15 +861,21 @@ void MainWindow::paintMap()
     const QVector<MissionPoint> &pts = replay ? rec_.points : points_;
     const bool live = !replay;
     const bool runningView = live && (missionState_ == MissionState::Running || missionState_ == MissionState::Paused);
+    // A finished mission shows the executed route (from its start, no collision marks) until the
+    // operator edits the points or starts again (resumePlanning).
+    const bool finishedView = live && (missionState_ == MissionState::Done || missionState_ == MissionState::Aborted);
 
-    // Route: from the robot (or the recording start) through all points.
+    // Route: from the robot (or the recording start) through all points. The first leg is the approach
+    // from where the robot stands to point 1; it is dashed so it does not look like part of the mission.
     QVector<QPointF> chain;
-    if (replay) { if (!rec_.poses.isEmpty()) chain.append(QPointF(rec_.poses.first().amcl.x, rec_.poses.first().amcl.y)); }
-    else if (hasPose_) chain.append(runningView && !trail_.isEmpty() ? trail_.first() : QPointF(pose_.x, pose_.y));
+    if (replay) { if (!rec_.poses.isEmpty()) chain.append(QPointF(rec_.poses.first().view.x, rec_.poses.first().view.y)); }
+    // AMCL pose, the same start as validationError(): a collision drawn here always blocks the mission
+    else if (hasPose_) chain.append((runningView || finishedView) && !trail_.isEmpty() ? trail_.first() : QPointF(pose_.x, pose_.y));
+    const bool hasApproach = !chain.isEmpty();
     for (const MissionPoint &mp : pts) chain.append(mp.pos);
     for (int i = 1; i < chain.size(); ++i) {
         const QPointF a = worldToWidget(chain[i - 1]), b = worldToWidget(chain[i]);
-        const bool collision = live && !runningView && segmentBlocked(chain[i - 1], chain[i]);
+        const bool collision = live && !runningView && !finishedView && segmentBlocked(chain[i - 1], chain[i]);
         if (collision) {
             p.setPen(QPen(kCollisionColor, 3, Qt::DashLine, Qt::FlatCap));
             p.drawLine(a, b);
@@ -723,18 +888,19 @@ void MainWindow::paintMap()
             p.drawLine(mid + QPointF(-4, 4), mid + QPointF(4, -4));
         } else {
             QColor c = kRouteColor;
-            if (runningView || replay) c.setAlpha(110);
-            p.setPen(QPen(c, 3, Qt::SolidLine, Qt::RoundCap));
+            if (runningView || finishedView || replay) c.setAlpha(110);
+            const bool approach = hasApproach && i == 1;
+            p.setPen(QPen(c, approach ? 2 : 3, approach ? Qt::DashLine : Qt::SolidLine, Qt::RoundCap));
             p.drawLine(a, b);
         }
     }
 
     // Trails
-    auto drawTrail = [&](const QVector<QPointF> &trail, const QColor &color, Qt::PenStyle style) {
+    auto drawTrail = [&](const QVector<QPointF> &trail, const QColor &color, Qt::PenStyle style, double width = 2.5) {
         if (trail.size() < 2) return;
         QPolygonF poly;
         for (const QPointF &t : trail) poly << worldToWidget(t);
-        p.setPen(QPen(color, 2.5, style, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(color, width, style, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(Qt::NoBrush);
         p.drawPolyline(poly);
     };
@@ -743,19 +909,44 @@ void MainWindow::paintMap()
         auto it = std::upper_bound(rec_.poses.begin(), rec_.poses.end(), playPos_,
                                    [](qint64 t, const RecSample &s) { return t < s.t; });
         replayIndex = std::max(0, int(it - rec_.poses.begin()) - 1);
-        QVector<QPointF> amcl, odom;
-        for (int i = 0; i <= replayIndex; i += 2) {
-            amcl << QPointF(rec_.poses[i].amcl.x, rec_.poses[i].amcl.y);
+        // A raw AMCL sample far from the drawn pose is a momentary false localization that the HMI did not
+        // follow (setRobotPose): the AMCL trail is broken there and the sample gets a small red cross.
+        QVector<QVector<QPointF>> amcl(1);
+        QVector<QPointF> odom, view, amclGlitches;
+        auto addAmcl = [&](const Pose &a, const Pose &v) {
+            if (std::hypot(a.x - v.x, a.y - v.y) <= kViewSnapDist && std::abs(normAngle(a.th - v.th)) <= kViewSnapAngle) {
+                amcl.last() << QPointF(a.x, a.y);
+            } else {
+                amclGlitches << QPointF(a.x, a.y);
+                if (!amcl.last().isEmpty()) amcl.append(QVector<QPointF>());
+            }
+        };
+        for (int i = 0; i <= replayIndex; ++i) {
+            addAmcl(rec_.poses[i].amcl, rec_.poses[i].view);
             odom << QPointF(rec_.poses[i].odom.x, rec_.poses[i].odom.y);
+            view << QPointF(rec_.poses[i].view.x, rec_.poses[i].view.y);
         }
+        // the trails end at the current (interpolated) poses, so they do not lag behind the robots
+        addAmcl(replayPose_, replayView_);
+        odom << QPointF(replayOdom_.x, replayOdom_.y);
+        view << QPointF(replayView_.x, replayView_.y);
+        drawTrail(view, kTrailColor, Qt::SolidLine);                         // as drawn during the mission
         if (ui->layerOdomCheck->isChecked()) drawTrail(odom, kOdomColor, Qt::DashLine);
-        if (ui->layerAmclCheck->isChecked()) drawTrail(amcl, kTrailColor, Qt::SolidLine);
+        if (ui->layerAmclCheck->isChecked()) {                               // raw AMCL data
+            for (const QVector<QPointF> &part : amcl) drawTrail(part, kAmclColor, Qt::SolidLine, 1.5);
+            p.setPen(QPen(kCollisionColor, 1.5));
+            for (const QPointF &g : amclGlitches) {
+                const QPointF c = worldToWidget(g);
+                p.drawLine(c + QPointF(-3, -3), c + QPointF(3, 3));
+                p.drawLine(c + QPointF(-3, 3), c + QPointF(3, -3));
+            }
+        }
     } else if (runningView || missionState_ == MissionState::Done || missionState_ == MissionState::Aborted) {
         drawTrail(trail_, kTrailColor, Qt::SolidLine);
     }
 
     // Lidar scan in the map frame
-    const Pose scanPose = replay ? replayPose_ : pose_;
+    const Pose scanPose = replay ? replayScanPose_ : scanPose_;
     const QVector<QPointF> &scan = replay ? replayScan_ : lidarPoints_;
     const bool showScan = replay ? ui->layerLidarCheck->isChecked() : (connected_ && hasPose_);
     if (showScan) {
@@ -826,7 +1017,7 @@ void MainWindow::paintMap()
 
     // Obstacle ahead of the robot
     if (live && obstacleAhead_ && hasPose_ && connected_) {
-        const QPointF o(pose_.x + 0.4 * std::cos(pose_.th), pose_.y + 0.4 * std::sin(pose_.th));
+        const QPointF o(drawPose_.x + 0.4 * std::cos(drawPose_.th), drawPose_.y + 0.4 * std::sin(drawPose_.th));
         p.setPen(QPen(Qt::white, 2));
         p.setBrush(kCollisionColor);
         p.drawRoundedRect(QRectF(worldToWidget(o) - QPointF(9, 9), QSizeF(18, 18)), 4, 4);
@@ -852,9 +1043,22 @@ void MainWindow::paintMap()
     };
     if (replay && replayIndex >= 0) {
         if (ui->layerOdomCheck->isChecked()) drawRobot(replayOdom_, true);
-        if (ui->layerAmclCheck->isChecked()) drawRobot(replayPose_, false);
+        if (ui->layerAmclCheck->isChecked()) {   // raw AMCL position: a small marker (red cross = false localization)
+            const QPointF c = worldToWidget(QPointF(replayPose_.x, replayPose_.y));
+            if (std::hypot(replayPose_.x - replayView_.x, replayPose_.y - replayView_.y) <= kViewSnapDist
+                    && std::abs(normAngle(replayPose_.th - replayView_.th)) <= kViewSnapAngle) {
+                p.setPen(QPen(kAmclColor, 2));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(c, 5, 5);
+            } else {
+                p.setPen(QPen(kCollisionColor, 2));
+                p.drawLine(c + QPointF(-5, -5), c + QPointF(5, 5));
+                p.drawLine(c + QPointF(-5, 5), c + QPointF(5, -5));
+            }
+        }
+        drawRobot(replayView_, false);           // the robot as it was drawn during the mission
     } else if (live && hasPose_) {
-        drawRobot(pose_, false);
+        drawRobot(drawPose_, false);
     }
 
     // Scale bar
@@ -941,6 +1145,7 @@ void MainWindow::showPointMenu(int index, const QPoint &globalPos)
     if (!chosen) return;
     if (chosen == del) { deleteSelectedPoint(); return; }
     if (!chosen->data().isValid()) return;
+    resumePlanning();
     const QString id = chosen->data().toString();
     mp.operation = id != "pass";
     if (mp.operation) mp.task = id;
@@ -955,11 +1160,7 @@ void MainWindow::insertPoint(const MissionPoint &p)
     const int at = (selected_ >= 0 && selected_ < points_.size()) ? selected_ + 1 : points_.size();
     points_.insert(at, p);
     selected_ = at;
-    if (missionState_ == MissionState::Done || missionState_ == MissionState::Aborted) {
-        missionState_ = MissionState::Idle;
-        trail_.clear();
-        updateMissionUi();
-    }
+    resumePlanning();
     refreshPointsTable();
     updateValidation();
     ui->mapView->update();
@@ -992,6 +1193,7 @@ void MainWindow::refreshPointsTable()
             combo->addItem(QString::fromUtf8("Prejazdový bod"), QString("pass"));
             connect(combo, QOverload<int>::of(&QComboBox::activated), this, [this, i, combo](int){
                 if (i >= points_.size() || !editable()) return;
+                resumePlanning();
                 const QString id = combo->currentData().toString();
                 points_[i].operation = id != "pass";
                 if (points_[i].operation) points_[i].task = id;
@@ -1041,6 +1243,7 @@ void MainWindow::movePoint(int delta)
 void MainWindow::deleteSelectedPoint()
 {
     if (!editable() || selected_ < 0 || selected_ >= points_.size()) return;
+    resumePlanning();
     points_.remove(selected_);
     selected_ = -1;
     refreshPointsTable();
@@ -1154,6 +1357,17 @@ void MainWindow::updateValidation()
         ui->startMissionButton->setEnabled(false);
         return;
     }
+    const bool finished = missionState_ == MissionState::Done || missionState_ == MissionState::Aborted;
+    ui->startMissionButton->setText(finished ? QString::fromUtf8("Naplánovať znova") : QString::fromUtf8("Spustiť"));
+    if (finished) {
+        // Not checked from the robot's current position yet - that happens on an edit or "Naplánovať znova".
+        ui->validationLabel->setText((missionState_ == MissionState::Done ? QString::fromUtf8("Misia dokončená.")
+                                                                          : QString::fromUtf8("Misia prerušená."))
+                                     + QString::fromUtf8(" Ďalšia misia: upravte body alebo kliknite na „Naplánovať znova“."));
+        ui->validationLabel->setStyleSheet("background: #eaf3fc; border: 1px solid #93c5fd; color: #1e3a5f; padding: 6px; border-radius: 3px; font-weight: bold;");
+        ui->startMissionButton->setEnabled(true);
+        return;
+    }
     const QString err = validationError();
     const bool ok = err.isEmpty();
     ui->validationLabel->setText(ok ? QString::fromUtf8("✓ Trasa je priechodná – misiu je možné spustiť.")
@@ -1170,18 +1384,22 @@ void MainWindow::updateValidation()
 
 void MainWindow::startMission()
 {
+    // After a finished mission the button reads "Naplánovať znova": this click only shows (and checks) the
+    // route from the robot's current position, the next one starts the mission.
+    if (missionState_ == MissionState::Done || missionState_ == MissionState::Aborted) { resumePlanning(); return; }
     const QString err = validationError();
     if (!err.isEmpty()) { showToast(err, LogLevel::Danger); return; }
     missionState_ = MissionState::Running;
     currentIndex_ = 0;
     inTask_ = false;
     trail_.clear();
-    trail_.append(QPointF(pose_.x, pose_.y));
+    trail_.append(QPointF(viewPose_.x, viewPose_.y));
     detections_.clear();
     ui->foundList->clear();
     focusedDetection_ = -1;
     selected_ = -1;
     missionClock_.start();
+    anchorOdometry();      // odometry of the mission starts at the AMCL pose (common start frame)
     startRecording();      // every mission is recorded automatically
     addLog(QString::fromUtf8("Misia spustená (%1 bodov) – nahrávanie zapnuté").arg(points_.size()), LogLevel::Ok);
     emit missionStarted();
@@ -1208,7 +1426,7 @@ void MainWindow::resumeMission()
     const QString b = runBlocker();
     if (!b.isEmpty()) { showToast(QString::fromUtf8("Nie je možné pokračovať: ") + b, LogLevel::Danger); return; }
     missionState_ = MissionState::Running;
-    if (inTask_) taskTimer_.restart(); else sendCurrentGoal();
+    if (inTask_) { taskTimer_.restart(); taskLastTh_ = odomRaw_.th; } else sendCurrentGoal();
     addLog(QString::fromUtf8("Misia obnovená operátorom"), LogLevel::Ok);
     updateMissionUi();
 }
@@ -1260,7 +1478,7 @@ void MainWindow::missionTick()
 
     const MissionPoint &mp = points_[currentIndex_];
     if (!inTask_) {
-        const double dist = std::hypot(mp.pos.x() - pose_.x, mp.pos.y() - pose_.y);
+        const double dist = std::hypot(mp.pos.x() - viewPose_.x, mp.pos.y() - viewPose_.y);   // same pose as driveToGoal
         if (dist < kGoalTolerance) {
             sendSpeed(0, 0);
             if (mp.operation) startTask();
@@ -1271,7 +1489,16 @@ void MainWindow::missionTick()
     } else {
         const bool rotating = mp.task == "rotate" || mp.task == "search";
         sendSpeed(0, rotating ? kRotateSpeed : 0.0);
-        if (taskTimer_.elapsed() >= taskDurationMs_) {
+        // A turn is done after a full 360° measured by the odometry (the robot turns slower than
+        // kRotateSpeed while it speeds up, so the time alone gave only ~280°). Without odometry, or if
+        // the turn takes 3x longer than expected, the time ends it.
+        bool done = taskTimer_.elapsed() >= taskDurationMs_;
+        if (rotating) {
+            taskTurned_ += normAngle(odomRaw_.th - taskLastTh_);
+            taskLastTh_ = odomRaw_.th;
+            done = hasOdomRaw_ ? (std::abs(taskTurned_) >= 2 * kPi || taskTimer_.elapsed() >= 3 * taskDurationMs_) : done;
+        }
+        if (done) {
             sendSpeed(0, 0);
             inTask_ = false;
             advanceMission();
@@ -1292,6 +1519,8 @@ void MainWindow::startTask()
         taskDurationMs_ = 3000;
     } else {
         taskDurationMs_ = qint64(2 * kPi / kRotateSpeed * 1000.0);
+        taskTurned_ = 0.0;                   // the turn ends after a full 360° by the odometry (missionTick)
+        taskLastTh_ = odomRaw_.th;
         emit rotateRequested(2 * kPi);
     }
     const QString text = QString::fromUtf8("Bod %1: %2").arg(currentIndex_ + 1).arg(taskLabel(mp.task));
@@ -1306,16 +1535,31 @@ void MainWindow::advanceMission()
     else sendCurrentGoal();
 }
 
-// Simple built-in go-to controller (rotate in place, then drive straight). The robot stops in front of
-// obstacles; replace with the backend navigation by connecting goalRequested() and removing this call.
+// Combined (združený) go-to controller: forward speed and rotation are regulated at the same time, so the
+// robot drives along an arc towards the point. With a heading error above kTurnInPlace it first turns on
+// the spot. The forward speed follows an acceleration ramp, slows down near the point and is scaled by
+// cos(error); obstacles stop the robot. It uses the pose drawn on the map (odometry between AMCL updates,
+// corrected by AMCL): the raw AMCL heading jumps by several degrees, which would shake the rotation.
 void MainWindow::driveToGoal(const QPointF &goal)
 {
-    if (obstacleAhead_) { sendSpeed(0, 0); return; }
-    const double dx = goal.x() - pose_.x, dy = goal.y() - pose_.y;
+    const Pose &p = viewPose_;
+    const double dx = goal.x() - p.x, dy = goal.y() - p.y;
     const double dist = std::hypot(dx, dy);
-    const double err = normAngle(std::atan2(dy, dx) - pose_.th);
-    if (std::abs(err) > 0.25) sendSpeed(0, err > 0 ? 0.7 : -0.7);
-    else sendSpeed(qBound(80.0, dist * 600.0, 300.0), 0);
+    const double err = normAngle(std::atan2(dy, dx) - p.th);
+
+    const double rotation = qBound(-kMaxRotation, kRotationGain * err, kMaxRotation);   // rad/s
+    if (obstacleAhead_) {
+        // Obstacle in front: never forward, but turn on the spot towards the point (safe for the round
+        // robot; usually this turns it away from the obstacle). Only when the robot already faces the
+        // point and the obstacle is still in front, the point lies behind it and the robot waits.
+        sendSpeed(0, std::abs(err) > kObstacleFacingAngle ? rotation : 0.0);
+        return;
+    }
+    double forward = 0.0;                                                                // mm/s
+    if (std::abs(err) < kTurnInPlace)
+        forward = qBound(kMinForward, kForwardGain * dist, kMaxForward) * std::cos(err);
+    rampSpeed_ = std::min(forward, rampSpeed_ + kMaxAccel * missionTimer_.interval() / 1000.0);
+    sendSpeed(rampSpeed_, rotation);
 }
 
 void MainWindow::updateMissionUi()
@@ -1410,16 +1654,11 @@ void MainWindow::refreshAlarms()
             : "background: #ecfdf5; border: 1px solid #86c9a6; color: #166534; padding: 6px 10px; border-radius: 3px; font-weight: bold;");
 }
 
+// The window has no event log. Alarms and detections are only written into the mission recording
+// (events.csv), the replay shows them as events and timeline marks; the operator sees warnings in the
+// alarm banner and the toasts.
 void MainWindow::addLog(const QString &text, LogLevel level)
 {
-    static const QHash<int, QColor> colors = {
-        {int(LogLevel::Info), QColor("#3c4a5e")}, {int(LogLevel::Ok), QColor("#166534")},
-        {int(LogLevel::Warning), QColor("#92400e")}, {int(LogLevel::Danger), QColor("#b91c1c")},
-        {int(LogLevel::Detection), QColor("#6d28d9")}};
-    auto *item = new QListWidgetItem(QTime::currentTime().toString("HH:mm:ss") + "  " + text);
-    item->setForeground(colors.value(int(level)));
-    ui->logList->insertItem(0, item);
-    while (ui->logList->count() > 200) delete ui->logList->takeItem(ui->logList->count() - 1);
     if (recording_ && level != LogLevel::Info) recordEvent(level == LogLevel::Detection ? "det" : "alarm", text);
 }
 
@@ -1484,6 +1723,24 @@ void MainWindow::updateViewTitles()
 
 // Swaps the map and the camera between the main area and the side slot. The widgets are moved
 // physically, so painting and map editing keep working on ui->mapView wherever it is.
+// Ctrl+H hides the bottom bar (legend, mission status / replay controls): the main view, the map or the
+// camera, then reaches down to the bottom of the window. SAFETY STOP must stay reachable, so while the
+// bar is hidden it sits in the header.
+void MainWindow::toggleBottomBar()
+{
+    const bool hide = ui->bottomBar->isVisible();
+    if (hide) {
+        ui->headerLayout->insertWidget(ui->headerLayout->indexOf(ui->batteryLabel), ui->safetyStopButton);
+        ui->safetyStopButton->setFixedSize(180, 44);
+    } else {
+        ui->bottomLayout->addWidget(ui->safetyStopButton);
+        ui->safetyStopButton->setFixedSize(210, 64);
+    }
+    ui->bottomBar->setVisible(!hide);
+    showToast(hide ? QString::fromUtf8("Spodná lišta skrytá – Ctrl+H ju znova zobrazí")
+                   : QString::fromUtf8("Spodná lišta zobrazená"));
+}
+
 void MainWindow::swapViews()
 {
     QWidget *big = viewsSwapped_ ? static_cast<QWidget *>(ui->cameraLabel) : ui->mapView;
@@ -1545,13 +1802,16 @@ void MainWindow::startRecording()
         out.setDevice(file.get());
         out << header << '\n';
     };
-    open(posesFile_, posesOut_, "poses.csv", "t_ms,amcl_x,amcl_y,amcl_th,odom_x,odom_y,odom_th");
+    // view_* = the pose drawn on the map (odometry between AMCL updates, corrected by AMCL)
+    // start_* = the robot pose relative to the initial coordinate system: the robot frame when the mission
+    //           started (x forward, y left, θ CCW; 0, 0, 0 at the start), from the odometry
+    open(posesFile_, posesOut_, "poses.csv",
+         "t_ms,amcl_x,amcl_y,amcl_th,odom_x,odom_y,odom_th,view_x,view_y,view_th,start_x,start_y,start_th");
     open(scanFile_, scanOut_, "scan.csv", "t_ms,n,angle_deg_1,dist_mm_1,...");
     open(cameraFile_, cameraOut_, "camera.csv", "t_ms,file");
     open(eventsFile_, eventsOut_, "events.csv", "t_ms,type,text");
     open(detFile_, detOut_, "detections.csv", "t_ms,name,confidence,x,y,file,box_x,box_y,box_w,box_h");
     recording_ = true;
-    lastRecordedScan_ = scanSerial_;
     cameraRecordAge_.invalidate();
     cameraFrameNo_ = 0;
     photoNo_ = 0;
@@ -1576,13 +1836,10 @@ void MainWindow::recordTick()
     if (!recording_) return;
     const qint64 t = missionTimeMs();
     posesOut_ << t << ',' << pose_.x << ',' << pose_.y << ',' << pose_.th << ','
-              << odom_.x << ',' << odom_.y << ',' << odom_.th << '\n';
-    if (scanSerial_ != lastRecordedScan_) {
-        lastRecordedScan_ = scanSerial_;
-        scanOut_ << t << ',' << lidarRaw_.size();
-        for (const QPointF &a : lidarRaw_) scanOut_ << ',' << QString::number(a.x(), 'f', 2) << ',' << QString::number(a.y(), 'f', 0);
-        scanOut_ << '\n';
-    }
+              << odom_.x << ',' << odom_.y << ',' << odom_.th << ','
+              << viewPose_.x << ',' << viewPose_.y << ',' << viewPose_.th << ','
+              << odomStart_.x << ',' << odomStart_.y << ',' << odomStart_.th << '\n';
+    // lidar scans are written as they arrive (handleScan)
 }
 
 void MainWindow::recordEvent(const QString &type, const QString &text)
@@ -1656,8 +1913,13 @@ bool MainWindow::loadRecording(const QString &dir)
     for (const QString &l : lines("poses.csv")) {
         const QStringList v = l.split(',');
         if (v.size() < 7) continue;
-        r.poses.append(RecSample{v[0].toLongLong(), {v[1].toDouble(), v[2].toDouble(), v[3].toDouble()},
-                        {v[4].toDouble(), v[5].toDouble(), v[6].toDouble()}});
+        const Pose amcl{v[1].toDouble(), v[2].toDouble(), v[3].toDouble()};
+        const Pose odom{v[4].toDouble(), v[5].toDouble(), v[6].toDouble()};
+        // view_* (the pose drawn during the mission) is missing in older recordings: AMCL is used instead
+        const Pose view = v.size() >= 10 ? Pose{v[7].toDouble(), v[8].toDouble(), v[9].toDouble()} : amcl;
+        Pose start;
+        if (v.size() >= 13) { start = Pose{v[10].toDouble(), v[11].toDouble(), v[12].toDouble()}; r.hasStart = true; }
+        r.poses.append(RecSample{v[0].toLongLong(), amcl, odom, view, start});
     }
     for (const QString &l : lines("scan.csv")) {
         const QStringList v = l.split(',');
@@ -1765,19 +2027,35 @@ void MainWindow::playbackTick()
     showReplayFrame();
 }
 
+// Pose of the recording at time t: linear between the two 10 Hz samples around t (heading the shorter
+// way round), so the replay moves smoothly instead of jumping from sample to sample.
+MainWindow::Pose MainWindow::recordedPoseAt(qint64 t, Pose RecSample::*which) const
+{
+    auto it = std::upper_bound(rec_.poses.begin(), rec_.poses.end(), t,
+                               [](qint64 v, const RecSample &s) { return v < s.t; });
+    const int next = int(it - rec_.poses.begin());
+    const int lo = std::max(0, next - 1), hi = std::min(next, int(rec_.poses.size()) - 1);
+    const Pose &a = rec_.poses[lo].*which, &b = rec_.poses[hi].*which;
+    const qint64 ta = rec_.poses[lo].t, tb = rec_.poses[hi].t;
+    const double f = tb > ta ? qBound(0.0, double(t - ta) / double(tb - ta), 1.0) : 0.0;
+    return Pose{a.x + f * (b.x - a.x), a.y + f * (b.y - a.y), normAngle(a.th + f * normAngle(b.th - a.th))};
+}
+
 void MainWindow::showReplayFrame()
 {
     if (!recLoaded_) return;
-    auto pit = std::upper_bound(rec_.poses.begin(), rec_.poses.end(), playPos_,
-                                [](qint64 t, const RecSample &s) { return t < s.t; });
-    const RecSample &s = rec_.poses[std::max(0, int(pit - rec_.poses.begin()) - 1)];
-    replayPose_ = s.amcl;
-    replayOdom_ = s.odom;
+    replayPose_ = recordedPoseAt(playPos_, &RecSample::amcl);
+    replayOdom_ = recordedPoseAt(playPos_, &RecSample::odom);
+    replayView_ = recordedPoseAt(playPos_, &RecSample::view);
+    replayStart_ = recordedPoseAt(playPos_, &RecSample::start);
 
     replayScan_.clear();
     auto sit = std::upper_bound(rec_.scans.begin(), rec_.scans.end(), playPos_,
                                 [](qint64 t, const RecScan &x) { return t < x.t; });
-    if (sit != rec_.scans.begin()) replayScan_ = (sit - 1)->points;
+    if (sit != rec_.scans.begin()) {
+        replayScan_ = (sit - 1)->points;
+        replayScanPose_ = recordedPoseAt((sit - 1)->t, &RecSample::view);   // where the robot was at that scan
+    }
 
     auto fit = std::upper_bound(rec_.frames.begin(), rec_.frames.end(), playPos_,
                                 [](qint64 t, const RecFrame &x) { return t < x.t; });
@@ -1798,6 +2076,8 @@ void MainWindow::showReplayFrame()
     ui->replayInfoGroup->setTitle(QString::fromUtf8("Stav v čase %1").arg(fmtMs(playPos_)));
     ui->replayAmclLabel->setText("AMCL: " + poseText(replayPose_));
     ui->replayOdomLabel->setText(QString::fromUtf8("Odometria: ") + poseText(replayOdom_));
+    ui->replayStartLabel->setText(QString::fromUtf8("Voči štartu misie: ")
+            + (rec_.hasStart ? poseText(replayStart_) : QString::fromUtf8("–")));
     ui->replayDriftLabel->setText(QString::fromUtf8("Odchýlka odometrie od AMCL: %1 m")
             .arg(std::hypot(replayOdom_.x - replayPose_.x, replayOdom_.y - replayPose_.y), 0, 'f', 2));
     QString event = QString::fromUtf8("–");
@@ -1892,8 +2172,10 @@ bool MainWindow::detectTarget(const QImage &rgb, QRectF &box, double &confidence
     cv::Mat mat(img.height(), img.width(), CV_8UC3, const_cast<uchar *>(img.constBits()), size_t(img.bytesPerLine()));
     cv::Mat hsv, low, high, mask;
     cv::cvtColor(mat, hsv, cv::COLOR_RGB2HSV);
-    cv::inRange(hsv, cv::Scalar(0, 120, 80), cv::Scalar(10, 255, 255), low);
-    cv::inRange(hsv, cv::Scalar(170, 120, 80), cv::Scalar(180, 255, 255), high);
+    // Measured on the real robot's camera in the lab: the ball is a dark red (hue 175-180/0, saturation
+    // ~110-150, brightness only ~50-120), the grey walls and floor have saturation below ~25.
+    cv::inRange(hsv, cv::Scalar(0, 90, 35), cv::Scalar(10, 255, 255), low);
+    cv::inRange(hsv, cv::Scalar(170, 90, 35), cv::Scalar(180, 255, 255), high);
     mask = low | high;
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5)));
     std::vector<std::vector<cv::Point>> contours;
@@ -1908,6 +2190,12 @@ bool MainWindow::detectTarget(const QImage &rgb, QRectF &box, double &confidence
     const double perimeter = cv::arcLength(contours[best], true);
     const double circularity = perimeter > 0 ? 4 * kPi * bestArea / (perimeter * perimeter) : 0;
     if (circularity < 0.5) return false;
+    // A ball fills most of its enclosing circle (>= 0.53 even when cut by the image edge), a strip of red
+    // tape on the floor only ~0.35.
+    cv::Point2f centre;
+    float radius = 0.0f;
+    cv::minEnclosingCircle(contours[best], centre, radius);
+    if (radius <= 0.0f || bestArea / (kPi * radius * radius) < 0.45) return false;
     const cv::Rect r = cv::boundingRect(contours[best]);
     box = QRectF(double(r.x) / img.width(), double(r.y) / img.height(),
                  double(r.width) / img.width(), double(r.height) / img.height());
@@ -2031,6 +2319,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
                                         : QString());
         layoutOverlays();
         if (dragIndex_ >= 0 && (me->buttons() & Qt::LeftButton)) {
+            if (!dragMoved_) resumePlanning();
             dragMoved_ = true;
             points_[dragIndex_].pos = w;
             ui->mapView->update();
